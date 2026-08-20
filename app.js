@@ -447,14 +447,160 @@ function fyProjection(fy) {
     method = 'flat';
   }
 
-  const targetRows = state.manualRevenue.filter((r) => r.financial_year === fy && r.target != null);
-  let annualTarget = null;
-  if (targetRows.length >= 26) { // only trust this if at least half the year has a target set
-    const avgTarget = targetRows.reduce((a, r) => a + r.target, 0) / targetRows.length;
-    annualTarget = avgTarget * 52;
+  // A confirmed annual target (config.js) is a firmer number than
+  // extrapolating from whichever weekly targets happen to be filled in, so
+  // it takes priority when set.
+  let annualTarget = CONFIG.ANNUAL_TARGET || null;
+  if (!annualTarget) {
+    const targetRows = state.manualRevenue.filter((r) => r.financial_year === fy && r.target != null);
+    if (targetRows.length >= 26) {
+      const avgTarget = targetRows.reduce((a, r) => a + r.target, 0) / targetRows.length;
+      annualTarget = avgTarget * 52;
+    }
   }
 
   return { projectedTotal, annualTarget, weeksEntered: rows.length, lastWeek, method, curve };
+}
+
+// Blends real weekly targets (where Peter's set one) with an implied split
+// of the confirmed annual target for any week that doesn't have one yet -
+// so the target line on the chart covers the full 52 weeks instead of
+// stopping wherever the manually-entered targets run out.
+function weeklyTargetSeries(fy) {
+  const curve = seasonalCumulativeCurve();
+  const explicit = {};
+  state.manualRevenue
+    .filter((r) => r.financial_year === fy && r.target != null)
+    .forEach((r) => { explicit[r.week_number] = r.target; });
+
+  const series = [];
+  for (let w = 1; w <= 52; w++) {
+    if (explicit[w] != null) {
+      series[w] = explicit[w];
+    } else if (curve && CONFIG.ANNUAL_TARGET) {
+      series[w] = CONFIG.ANNUAL_TARGET * (curve[w] - curve[w - 1]);
+    } else {
+      series[w] = null;
+    }
+  }
+  return { series, hasImplied: !!(curve && CONFIG.ANNUAL_TARGET), explicitWeeks: Object.keys(explicit).length };
+}
+
+// "You're behind pace, here's where the biggest weeks left are" - ranks the
+// remaining weeks by their typical seasonal share of revenue, since closing
+// a gap is realistically about the big weeks (garden furniture season,
+// pre-Christmas etc), not the quiet ones.
+function recoveryFocus(fy) {
+  if (!CONFIG.ANNUAL_TARGET) return null;
+  const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
+  if (!rows.length) return null;
+  const lastWeek = Math.max(...rows.map((r) => r.week_number));
+  const curve = seasonalCumulativeCurve();
+  if (!curve) return null;
+
+  const cumulativeActual = rows.filter((r) => r.week_number <= lastWeek).reduce((a, r) => a + r.actual, 0);
+  const cumulativeTargetToDate = curve[lastWeek] * CONFIG.ANNUAL_TARGET;
+  const shortfall = cumulativeTargetToDate - cumulativeActual; // positive = behind
+
+  const remaining = [];
+  for (let w = lastWeek + 1; w <= 52; w++) {
+    const impliedTarget = CONFIG.ANNUAL_TARGET * (curve[w] - curve[w - 1]);
+    const historicalRows = CONFIG.COMPARISON_YEARS
+      .filter((y) => y < todayFYWeek.financial_year)
+      .map((y) => state.manualRevenue.find((r) => r.financial_year === y && r.week_number === w))
+      .filter(Boolean);
+    const historicalAvg = historicalRows.length
+      ? historicalRows.reduce((a, r) => a + r.actual, 0) / historicalRows.length
+      : null;
+    remaining.push({ week: w, impliedTarget, historicalAvg });
+  }
+  remaining.sort((a, b) => b.impliedTarget - a.impliedTarget);
+  const opportunityWeeks = remaining.slice(0, 6);
+  const quietWeeks = remaining.slice(-6).reverse();
+
+  return {
+    lastWeek, cumulativeActual, cumulativeTargetToDate, shortfall,
+    pctOfTargetReached: cumulativeActual / CONFIG.ANNUAL_TARGET,
+    pctExpectedByNow: curve[lastWeek],
+    opportunityWeeks, quietWeeks
+  };
+}
+
+// Auto-generated read of what's moving - channel winners/losers YoY and
+// whether CVR/AOV are helping or hurting, so the numbers on the page turn
+// into "here's what to look at" rather than just a wall of figures.
+function computeInsights(fy) {
+  const priorFY = fy - 1;
+  const insights = [];
+  const lastWeek = todayFYWeek.financial_year === fy ? todayFYWeek.week_number - 1 : 52;
+  if (lastWeek < 1) return insights;
+
+  const curRows = state.channelDaily.filter((r) => r.financial_year === fy && r.week_number <= lastWeek);
+  const priorRows = state.channelDaily.filter((r) => r.financial_year === priorFY && r.week_number <= lastWeek);
+
+  const sumByChannel = (rows) => {
+    const t = {};
+    rows.forEach((r) => {
+      if (!t[r.channel]) t[r.channel] = { sessions: 0, revenue: 0, transactions: 0 };
+      t[r.channel].sessions += r.sessions;
+      t[r.channel].revenue += r.revenue;
+      t[r.channel].transactions += r.transactions;
+    });
+    return t;
+  };
+  const curTotals = sumByChannel(curRows);
+  const priorTotals = sumByChannel(priorRows);
+
+  const movers = Object.keys(curTotals)
+    .filter((ch) => priorTotals[ch] && priorTotals[ch].revenue > 1000) // ignore tiny/noisy channels
+    .map((ch) => ({
+      channel: ch,
+      curRevenue: curTotals[ch].revenue,
+      priorRevenue: priorTotals[ch].revenue,
+      delta: (curTotals[ch].revenue - priorTotals[ch].revenue) / priorTotals[ch].revenue
+    }))
+    .sort((a, b) => a.delta - b.delta);
+
+  const decliners = movers.filter((m) => m.delta < -0.1).slice(0, 3);
+  const growers = movers.filter((m) => m.delta > 0.1).sort((a, b) => b.delta - a.delta).slice(0, 3);
+
+  decliners.forEach((m) => insights.push({
+    type: 'watch',
+    text: `${m.channel} is down ${fmtPct(Math.abs(m.delta))} YoY to date (${fmtGBP(m.curRevenue)} vs ${fmtGBP(m.priorRevenue)}) — worth a look.`
+  }));
+  growers.forEach((m) => insights.push({
+    type: 'good',
+    text: `${m.channel} is up ${fmtPct(m.delta)} YoY to date (${fmtGBP(m.curRevenue)} vs ${fmtGBP(m.priorRevenue)}) — whatever's driving this is working.`
+  }));
+
+  const curAll = Object.values(curTotals).reduce((a, t) => ({ sessions: a.sessions + t.sessions, revenue: a.revenue + t.revenue, transactions: a.transactions + t.transactions }), { sessions: 0, revenue: 0, transactions: 0 });
+  const priorAll = Object.values(priorTotals).reduce((a, t) => ({ sessions: a.sessions + t.sessions, revenue: a.revenue + t.revenue, transactions: a.transactions + t.transactions }), { sessions: 0, revenue: 0, transactions: 0 });
+  const curCVR = curAll.sessions ? curAll.transactions / curAll.sessions : 0;
+  const priorCVR = priorAll.sessions ? priorAll.transactions / priorAll.sessions : 0;
+  const cvrDelta = pctDelta(curCVR, priorCVR);
+  if (cvrDelta != null && cvrDelta < -0.05) {
+    insights.push({ type: 'watch', text: `Site-wide CVR is down ${fmtPct(Math.abs(cvrDelta))} YoY to date — sessions may look fine while fewer of them convert.` });
+  } else if (cvrDelta != null && cvrDelta > 0.05) {
+    insights.push({ type: 'good', text: `Site-wide CVR is up ${fmtPct(cvrDelta)} YoY to date.` });
+  }
+
+  const curAOV = curAll.transactions ? curAll.revenue / curAll.transactions : 0;
+  const priorAOV = priorAll.transactions ? priorAll.revenue / priorAll.transactions : 0;
+  const aovDelta = pctDelta(curAOV, priorAOV);
+  if (aovDelta != null && aovDelta < -0.05) {
+    insights.push({ type: 'watch', text: `AOV is down ${fmtPct(Math.abs(aovDelta))} YoY to date (${fmtGBP(curAOV)} vs ${fmtGBP(priorAOV)}).` });
+  }
+
+  // Concentration risk: how much of revenue sits in the single biggest channel
+  const sortedByRevenue = Object.entries(curTotals).sort((a, b) => b[1].revenue - a[1].revenue);
+  if (sortedByRevenue.length && curAll.revenue > 0) {
+    const topShare = sortedByRevenue[0][1].revenue / curAll.revenue;
+    if (topShare > 0.4) {
+      insights.push({ type: 'neutral', text: `${sortedByRevenue[0][0]} is ${fmtPct(topShare)} of online revenue to date — a lot riding on one channel.` });
+    }
+  }
+
+  return insights;
 }
 
 function renderKPIs() {
@@ -564,10 +710,8 @@ function renderRevenueChart() {
     };
   });
 
-  const targetValues = labels.map((w) => {
-    const row = state.manualRevenue.find((r) => r.financial_year === state.selectedFY && r.week_number === w);
-    return row ? row.target : null;
-  });
+  const targetInfo = weeklyTargetSeries(state.selectedFY);
+  const targetValues = labels.map((w) => targetInfo.series[w] ?? null);
   datasets.push({
     label: `FY${state.selectedFY} target`,
     data: targetValues,
@@ -627,6 +771,13 @@ function renderRevenueChart() {
     } else {
       forecastNote.textContent = '';
     }
+  }
+
+  const targetNote = document.getElementById('revenueTargetNote');
+  if (targetNote) {
+    targetNote.textContent = targetInfo.hasImplied
+      ? `Dashed black target: Wk1–${targetInfo.explicitWeeks} uses the numbers set for those weeks; the rest splits the £${(CONFIG.ANNUAL_TARGET / 1e6).toFixed(1)}m annual target across the remaining weeks by the same seasonal shape.`
+      : (targetInfo.explicitWeeks ? `Dashed black target covers ${targetInfo.explicitWeeks} of 52 weeks — set CONFIG.ANNUAL_TARGET in config.js to fill in the rest.` : '');
   }
 }
 
@@ -777,6 +928,56 @@ function channelTableRows() {
   return rows;
 }
 
+function renderRecoveryFocus() {
+  const panel = document.getElementById('recoveryFocusPanel');
+  if (!panel) return;
+  const rf = recoveryFocus(state.selectedFY);
+
+  if (!rf) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+
+  const behindOrAhead = rf.shortfall > 0 ? 'behind' : 'ahead of';
+  const headline = document.getElementById('recoveryHeadline');
+  headline.innerHTML = `
+    <div class="recovery-stat">
+      <div class="label">Pace vs £${(CONFIG.ANNUAL_TARGET / 1e6).toFixed(1)}m target</div>
+      <div class="value ${rf.shortfall > 0 ? 'down' : 'up'}">${fmtGBP(Math.abs(rf.shortfall))} ${behindOrAhead}</div>
+      <div class="note">${fmtPct(rf.pctOfTargetReached)} of target reached by Wk${rf.lastWeek} · typically ${fmtPct(rf.pctExpectedByNow)} by now</div>
+    </div>
+  `;
+
+  const oppList = document.getElementById('opportunityWeeksList');
+  oppList.innerHTML = rf.opportunityWeeks.map((w) => `
+    <li>
+      <span class="week-badge">Wk${w.week}</span>
+      <span class="week-detail">Implied target ${fmtGBP(w.impliedTarget)}${w.historicalAvg != null ? ` · historically averaged ${fmtGBP(w.historicalAvg)}` : ''}</span>
+    </li>
+  `).join('');
+
+  const quietList = document.getElementById('quietWeeksList');
+  quietList.innerHTML = rf.quietWeeks.map((w) => `Wk${w.week} (${fmtGBP(w.impliedTarget)})`).join(', ');
+}
+
+function renderInsights() {
+  const panel = document.getElementById('insightsPanel');
+  if (!panel) return;
+  const insights = computeInsights(state.selectedFY);
+  const list = document.getElementById('insightsList');
+
+  if (!insights.length) {
+    list.innerHTML = '<li class="insight-neutral">Nothing standing out yet — check back once more of the year has data.</li>';
+    return;
+  }
+
+  const icon = { watch: '⚠️', good: '✓', neutral: '·' };
+  list.innerHTML = insights.map((i) => `
+    <li class="insight-${i.type}"><span class="insight-icon">${icon[i.type]}</span> ${i.text}</li>
+  `).join('');
+}
+
 function renderChannelTable() {
   const rows = channelTableRows();
   const tbody = document.getElementById('channelTableBody');
@@ -806,6 +1007,18 @@ function renderChannelTable() {
       state.channelFocus = state.channelFocus === channel ? null : channel;
       renderChannelTable();
       renderChannelTrendChart();
+
+      // The chart this affects sits above the table, easy to miss the
+      // connection - scroll to it and flash it briefly so it's obvious
+      // clicking the row actually changed something up there.
+      const chartPanel = document.getElementById('channelTrendPanel');
+      if (chartPanel) {
+        chartPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        chartPanel.classList.remove('flash');
+        // eslint-disable-next-line no-unused-expressions
+        chartPanel.offsetWidth; // restart the animation if it's already mid-flash
+        chartPanel.classList.add('flash');
+      }
     });
   });
 }
@@ -852,7 +1065,7 @@ function renderAll() {
   document.getElementById('revenueActualInput').value = existing?.actual ?? '';
   document.getElementById('revenueTargetInput').value = existing?.target ?? '';
 
-  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable];
+  const steps = [renderLedger, renderKPIs, renderRecoveryFocus, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable, renderInsights];
   steps.forEach((step) => {
     try {
       step();

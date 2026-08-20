@@ -21,6 +21,13 @@ const CONFIG = {
   // Current financial year - used as the default view on load.
   CURRENT_FY: 2026,
 
+  // The confirmed full-year revenue target. Weekly targets in the Sheet only
+  // go up to week 24 right now - for any week without an explicit weekly
+  // target, the dashboard fills the gap by splitting this annual figure
+  // across the remaining weeks using the seasonal shape of FY23-25 (see
+  // seasonalCumulativeCurve in app.js), rather than just dividing by 52.
+  ANNUAL_TARGET: 23500000,
+
   // Business events worth marking on the trend charts - things that would
   // otherwise look like an unexplained kink in the line. Add to this as
   // things happen; each needs financial_year, week (1-52), and label.

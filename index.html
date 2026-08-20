@@ -60,6 +60,28 @@
     </section>
   </section>
 
+  <!-- Recovery focus: only shows once CONFIG.ANNUAL_TARGET is set and behaves accordingly -->
+  <section class="panel recovery-panel" id="recoveryFocusPanel">
+    <div class="panel-head">
+      <div>
+        <h2>Recovery focus</h2>
+        <div class="sub">Where the biggest weeks left in the year are, so effort goes where it counts most</div>
+      </div>
+    </div>
+    <div id="recoveryHeadline"></div>
+    <div class="recovery-columns">
+      <div>
+        <div class="recovery-subhead">Biggest weeks still to come</div>
+        <ul class="opportunity-list" id="opportunityWeeksList"></ul>
+      </div>
+      <div>
+        <div class="recovery-subhead">Naturally quiet weeks ahead</div>
+        <div class="quiet-weeks" id="quietWeeksList"></div>
+        <div class="sub" style="margin-top:8px;">Don't expect much recovery from these — historically your smallest weeks.</div>
+      </div>
+    </div>
+  </section>
+
   <!-- Weekly overall business revenue: target vs actual vs prior years -->
   <section class="panel">
     <div class="panel-head">
@@ -72,6 +94,7 @@
     <canvas id="revenueChart" height="90"></canvas>
     <div class="chart-footnote" id="revenueBestWorst"></div>
     <div class="chart-footnote" id="revenueForecastNote"></div>
+    <div class="chart-footnote" id="revenueTargetNote"></div>
   </section>
 
   <!-- Online performance -->
@@ -94,7 +117,7 @@
   </section>
 
   <!-- Channel trends -->
-  <section class="panel">
+  <section class="panel" id="channelTrendPanel">
     <div class="panel-head">
       <div>
         <h2>Channel trends</h2>
@@ -116,10 +139,11 @@
     <div class="panel-head">
       <div>
         <h2>Channel breakdown</h2>
-        <div class="sub" id="channelSub">Selected financial year, all weeks to date · click a row to isolate it in the trend chart above</div>
+        <div class="sub" id="channelSub">Selected financial year, all weeks to date</div>
       </div>
       <button id="exportChannelCsvBtn" type="button">Export CSV</button>
     </div>
+    <div class="click-hint">👆 Click any row to isolate that channel in the trend chart above</div>
     <table id="channelTable">
       <thead>
         <tr>
@@ -134,6 +158,17 @@
       </thead>
       <tbody id="channelTableBody"></tbody>
     </table>
+  </section>
+
+  <!-- Trend insights -->
+  <section class="panel" id="insightsPanel">
+    <div class="panel-head">
+      <div>
+        <h2>Trend insights &amp; areas to watch</h2>
+        <div class="sub">Auto-read from the numbers above — YoY channel movers, conversion trend, concentration risk</div>
+      </div>
+    </div>
+    <ul class="insights-list" id="insightsList"></ul>
   </section>
 
   <footer>
