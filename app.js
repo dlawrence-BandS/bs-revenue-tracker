@@ -73,10 +73,15 @@ function getAccessToken() {
 }
 
 document.getElementById('signInBtn').addEventListener('click', () => {
-  getAccessToken().then(() => loadEverything()).catch((e) => {
-    console.error('Auth failed', e);
-    document.getElementById('authStatus').textContent = 'Sign-in failed';
-  });
+  getAccessToken()
+    .then(() => loadEverything().catch((e) => {
+      console.error('Dashboard failed to load after sign-in', e);
+      document.getElementById('authStatus').textContent = 'Signed in — data load failed, see console';
+    }))
+    .catch((e) => {
+      console.error('Auth failed', e);
+      document.getElementById('authStatus').textContent = 'Sign-in failed';
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -449,11 +454,14 @@ function renderFYSelect() {
 }
 
 function renderAll() {
-  renderLedger();
-  renderKPIs();
-  renderRevenueChart();
-  renderOnlineChart();
-  renderChannelTable();
+  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTable];
+  steps.forEach((step) => {
+    try {
+      step();
+    } catch (e) {
+      console.error(`renderAll: ${step.name} failed`, e);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -476,16 +484,21 @@ document.getElementById('saveRevenueBtn').addEventListener('click', async () => 
   status.textContent = 'Saving…';
   try {
     await saveRevenue(state.selectedFY, w, actual === '' ? null : parseFloat(actual), target === '' ? null : parseFloat(target));
-    const existingIdx = state.manualRevenue.findIndex((r) => r.financial_year === state.selectedFY && r.week_number === w);
-    const updated = { financial_year: state.selectedFY, week_number: w, actual: actual === '' ? null : parseFloat(actual), target: target === '' ? null : parseFloat(target) };
-    if (existingIdx >= 0) state.manualRevenue[existingIdx] = { ...state.manualRevenue[existingIdx], ...updated };
-    else state.manualRevenue.push(updated);
-    status.textContent = 'Saved — remembered for everyone';
+  } catch (e) {
+    console.error('Save to Apps Script failed', e);
+    status.textContent = 'Save failed — check Apps Script URL in config.js';
+    return;
+  }
+  const existingIdx = state.manualRevenue.findIndex((r) => r.financial_year === state.selectedFY && r.week_number === w);
+  const updated = { financial_year: state.selectedFY, week_number: w, actual: actual === '' ? null : parseFloat(actual), target: target === '' ? null : parseFloat(target) };
+  if (existingIdx >= 0) state.manualRevenue[existingIdx] = { ...state.manualRevenue[existingIdx], ...updated };
+  else state.manualRevenue.push(updated);
+  status.textContent = 'Saved — remembered for everyone';
+  try {
     renderKPIs();
     renderRevenueChart();
   } catch (e) {
-    console.error(e);
-    status.textContent = 'Save failed — check Apps Script URL in config.js';
+    console.error('Save succeeded but re-render failed', e);
   }
 });
 
