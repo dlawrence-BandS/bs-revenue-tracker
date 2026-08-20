@@ -119,12 +119,12 @@ button.primary:hover { background: var(--brass); border-color: var(--brass); }
   gap: 2px;
   margin: 22px 0 8px;
   overflow-x: auto;
-  padding-bottom: 6px;
+  padding-bottom: 22px;
 }
 
 .ledger button.tick {
-  flex: 1 0 16px;
-  min-width: 16px;
+  flex: 1 0 20px;
+  min-width: 20px;
   height: 44px;
   border: none;
   border-radius: 2px;
@@ -135,22 +135,22 @@ button.primary:hover { background: var(--brass); border-color: var(--brass); }
 
 .ledger button.tick .num {
   position: absolute;
-  bottom: -18px;
+  bottom: -17px;
   left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 8px;
+  line-height: 1;
   color: var(--ash);
-  display: none;
+  display: block;
+  white-space: nowrap;
 }
-
-.ledger button.tick:nth-child(4n) .num { display: block; }
 
 .ledger button.tick.has-data { background: #a9c2da; }
 .ledger button.tick.current { background: var(--highlight); }
-.ledger button.tick.current .num { display: block; color: var(--highlight); font-weight: 600; }
+.ledger button.tick.current .num { color: var(--highlight); font-weight: 700; }
 .ledger button.tick.selected { outline: 2px solid var(--ink); outline-offset: 1px; }
-.ledger button.tick.selected .num { display: block; color: var(--ink); font-weight: 600; }
+.ledger button.tick.selected .num { color: var(--ink); font-weight: 700; }
 .ledger button.tick:hover { background: var(--ink); }
 
 .ledger-caption {
