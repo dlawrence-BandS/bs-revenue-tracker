@@ -13,7 +13,7 @@ const CONFIG = {
   BIGQUERY_VIEW: 'vw_channel_daily',
 
   // Paste the /exec URL from your Apps Script deployment here.
-  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyuUFuT5DQc0nBIILzjoHSq2mYLVam7Xp0PXP_Cj5HbNicgjIRSpGhJdKdZk5GG_4HU/exec',',
+  APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyuUFuT5DQc0nBIILzjoHSq2mYLVam7Xp0PXP_Cj5HbNicgjIRSpGhJdKdZk5GG_4HU/exec',
 
   // Years shown in year-over-year comparisons.
   COMPARISON_YEARS: [2023, 2024, 2025, 2026],
