@@ -171,15 +171,20 @@ async function saveRevenue(fy, week, actual, target) {
 // ---------------------------------------------------------------------------
 const state = {
   selectedFY: CONFIG.CURRENT_FY,
+  entryWeek: null,    // which week's inputs are showing in the entry row; set once todayFYWeek is known
   channelDaily: [],   // rows across all comparison years
   manualRevenue: [],
   onlineMetric: 'revenue',
   channelTrendMetric: 'revenue',
+  channelFocus: null,       // set by clicking a channel table row - isolates it in the trend chart
+  channelSort: { key: 'revenue', dir: 'desc' },
+  kpiCompareMode: 'yoy',     // 'yoy' or 'wow'
   charts: {}
 };
 
 const today = new Date();
 const todayFYWeek = fyWeekOf(new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())));
+state.entryWeek = state.selectedFY === todayFYWeek.financial_year ? todayFYWeek.week_number : 1;
 
 // The current financial week is still being collected in the background all
 // week, but showing it on a trend line makes it look like a sudden drop
@@ -266,6 +271,45 @@ function fmtDelta(v) {
 }
 
 // ---------------------------------------------------------------------------
+// Chart plugin: draws vertical markers for business events (config-driven)
+// so a shift in the line has an obvious cause instead of just looking odd.
+// ---------------------------------------------------------------------------
+const eventAnnotationPlugin = {
+  id: 'eventAnnotations',
+  afterDraw(chart) {
+    const events = chart.options.plugins?.eventAnnotations?.events || [];
+    if (!events.length) return;
+    const { ctx, chartArea, scales } = chart;
+    events.forEach((ev) => {
+      const x = scales.x.getPixelForValue(ev.week);
+      if (x < chartArea.left || x > chartArea.right) return;
+      ctx.save();
+      ctx.strokeStyle = '#5c6b7a';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = '#5c6b7a';
+      ctx.font = '10px Inter, sans-serif';
+      ctx.textAlign = x > chartArea.right - 90 ? 'right' : 'left';
+      const tx = x > chartArea.right - 90 ? x - 4 : x + 4;
+      ctx.fillText(ev.label, tx, chartArea.top + 11);
+      ctx.restore();
+    });
+  }
+};
+Chart.register(eventAnnotationPlugin);
+
+function eventsForFY(fy) {
+  return (CONFIG.EVENTS || []).filter((e) => e.financial_year === fy);
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 function renderLedger() {
@@ -280,6 +324,9 @@ function renderLedger() {
     if (state.selectedFY === todayFYWeek.financial_year && w === todayFYWeek.week_number) {
       btn.classList.add('current');
     }
+    if (w === state.entryWeek) {
+      btn.classList.add('selected');
+    }
     const span = document.createElement('span');
     span.className = 'num';
     span.textContent = w;
@@ -293,21 +340,80 @@ function renderLedger() {
 }
 
 function focusWeek(w) {
-  // Pre-fill the manual entry rows for quick capture of that week.
-  document.getElementById('revenueActualInput').dataset.week = w;
-  document.getElementById('revenueEntryRow').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  state.entryWeek = w;
+  document.getElementById('entryWeekLabel').textContent = `Editing FY${state.selectedFY} · Week ${w}`;
   const existing = state.manualRevenue.find((r) => r.financial_year === state.selectedFY && r.week_number === w);
   document.getElementById('revenueActualInput').value = existing?.actual ?? '';
   document.getElementById('revenueTargetInput').value = existing?.target ?? '';
+  updateURL();
+  // Re-render just the ledger so the outlined "selected" tick moves without
+  // touching anything else on the page.
+  renderLedger();
+}
+
+// Trailing N complete weeks of a metric for a given FY, oldest first - used
+// to draw the little sparkline in each KPI card.
+function trailingWeeklySeries(fy, metricFn, count = 8) {
+  const weekly = weeklyTotalsForFY(state.channelDaily, fy);
+  const lastComplete = fy === todayFYWeek.financial_year ? todayFYWeek.week_number - 1 : 52;
+  const values = [];
+  for (let w = Math.max(1, lastComplete - count + 1); w <= lastComplete; w++) {
+    const d = weekly[w];
+    values.push(d ? metricFn(d) : null);
+  }
+  return values;
+}
+
+function sparklineSVG(values) {
+  const clean = values.filter((v) => v != null && isFinite(v));
+  if (clean.length < 2) return '';
+  const min = Math.min(...clean);
+  const max = Math.max(...clean);
+  const range = max - min || 1;
+  const w = 120;
+  const h = 28;
+  const step = w / (values.length - 1);
+  let x = 0;
+  const points = values.map((v) => {
+    const px = x;
+    x += step;
+    if (v == null) return null;
+    const py = h - ((v - min) / range) * h;
+    return `${px.toFixed(1)},${py.toFixed(1)}`;
+  }).filter(Boolean).join(' ');
+  return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polyline points="${points}" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  </svg>`;
+}
+
+// "At this pace, FY finishes at £X" - based on actual weeks entered so far
+// this year, projected across the remaining weeks. Needs at least 3 entered
+// weeks to be worth showing.
+function fyProjection(fy) {
+  const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
+  if (rows.length < 3) return null;
+  const sumActual = rows.reduce((a, r) => a + r.actual, 0);
+  const avgWeekly = sumActual / rows.length;
+  const projectedTotal = sumActual + avgWeekly * (52 - rows.length);
+
+  const targetRows = state.manualRevenue.filter((r) => r.financial_year === fy && r.target != null);
+  let annualTarget = null;
+  if (targetRows.length >= 26) { // only trust this if at least half the year has a target set
+    const avgTarget = targetRows.reduce((a, r) => a + r.target, 0) / targetRows.length;
+    annualTarget = avgTarget * 52;
+  }
+
+  return { projectedTotal, annualTarget, weeksEntered: rows.length };
 }
 
 function renderKPIs() {
   const fy = state.selectedFY;
-  const priorFY = fy - 1;
+  const compareFY = state.kpiCompareMode === 'yoy' ? fy - 1 : fy;
   const wk = state.selectedFY === todayFYWeek.financial_year ? todayFYWeek.week_number : 52;
+  const compareWk = state.kpiCompareMode === 'yoy' ? wk : wk - 1;
 
   const curWeekRows = state.channelDaily.filter((r) => r.financial_year === fy && r.week_number === wk);
-  const priorWeekRows = state.channelDaily.filter((r) => r.financial_year === priorFY && r.week_number === wk);
+  const priorWeekRows = state.channelDaily.filter((r) => r.financial_year === compareFY && r.week_number === compareWk);
 
   const sum = (rows, key) => rows.reduce((a, r) => a + r[key], 0);
   const curRevenue = sum(curWeekRows, 'revenue');
@@ -323,6 +429,13 @@ function renderKPIs() {
   const curItemViews = sum(curWeekRows, 'item_views');
   const priorItemViews = sum(priorWeekRows, 'item_views');
 
+  const compareLabel = state.kpiCompareMode === 'yoy' ? 'YoY' : 'WoW';
+  const deltaWithLabel = (v) => {
+    const d = fmtDelta(v);
+    d.text = d.text === '—' ? d.text : d.text.replace('YoY', compareLabel);
+    return d;
+  };
+
   const businessRow = state.manualRevenue.find((r) => r.financial_year === fy && r.week_number === wk);
   const businessActual = businessRow?.actual;
   const businessTarget = businessRow?.target;
@@ -330,14 +443,34 @@ function renderKPIs() {
 
   const kpis = [
     { label: `Business revenue · wk ${wk}`, value: businessActual != null ? fmtGBP(businessActual) : 'Not entered',
-      delta: businessDelta != null ? { text: `${businessDelta > 0 ? '+' : ''}${fmtPct(businessDelta)} vs target`, cls: businessDelta >= 0 ? 'up' : 'down' } : { text: businessTarget ? `Target ${fmtGBP(businessTarget)}` : '—', cls: 'flat' } },
-    { label: 'Online revenue', value: fmtGBP(curRevenue), delta: fmtDelta(pctDelta(curRevenue, priorRevenue)) },
-    { label: 'Sessions', value: Math.round(curSessions).toLocaleString('en-GB'), delta: fmtDelta(pctDelta(curSessions, priorSessions)) },
-    { label: 'Transactions', value: Math.round(curTx).toLocaleString('en-GB'), delta: fmtDelta(pctDelta(curTx, priorTx)) },
-    { label: 'CVR', value: fmtPct(curCVR, 2), delta: fmtDelta(pctDelta(curCVR, priorCVR)) },
-    { label: 'AOV', value: fmtGBP(curAOV), delta: fmtDelta(pctDelta(curAOV, priorAOV)) },
-    { label: 'Item views', value: Math.round(curItemViews).toLocaleString('en-GB'), delta: fmtDelta(pctDelta(curItemViews, priorItemViews)) }
+      delta: businessDelta != null ? { text: `${businessDelta > 0 ? '+' : ''}${fmtPct(businessDelta)} vs target`, cls: businessDelta >= 0 ? 'up' : 'down' } : { text: businessTarget ? `Target ${fmtGBP(businessTarget)}` : '—', cls: 'flat' },
+      spark: '' },
+    { label: 'Online revenue', value: fmtGBP(curRevenue), delta: deltaWithLabel(pctDelta(curRevenue, priorRevenue)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.revenue)) },
+    { label: 'Sessions', value: Math.round(curSessions).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curSessions, priorSessions)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.sessions)) },
+    { label: 'Transactions', value: Math.round(curTx).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curTx, priorTx)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.transactions)) },
+    { label: 'CVR', value: fmtPct(curCVR, 2), delta: deltaWithLabel(pctDelta(curCVR, priorCVR)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.sessions ? d.transactions / d.sessions : null))) },
+    { label: 'AOV', value: fmtGBP(curAOV), delta: deltaWithLabel(pctDelta(curAOV, priorAOV)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.transactions ? d.revenue / d.transactions : null))) },
+    { label: 'Item views', value: Math.round(curItemViews).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curItemViews, priorItemViews)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.item_views)) }
   ];
+
+  const proj = fyProjection(fy);
+  if (proj) {
+    const vsTarget = proj.annualTarget ? (proj.projectedTotal - proj.annualTarget) / proj.annualTarget : null;
+    kpis.push({
+      label: `Projected FY total · from ${proj.weeksEntered}wk`,
+      value: fmtGBP(proj.projectedTotal),
+      delta: vsTarget != null
+        ? { text: `${vsTarget > 0 ? '+' : ''}${fmtPct(vsTarget)} vs annualised target`, cls: vsTarget >= 0 ? 'up' : 'down' }
+        : { text: 'Not enough target data to compare', cls: 'flat' },
+      spark: ''
+    });
+  }
 
   const row = document.getElementById('kpiRow');
   row.innerHTML = kpis.map((k) => `
@@ -345,8 +478,17 @@ function renderKPIs() {
       <div class="label">${k.label}</div>
       <div class="value">${k.value}</div>
       <div class="delta ${k.delta.cls}">${k.delta.text}</div>
+      ${k.spark}
     </div>
   `).join('');
+}
+
+function bestWorstWeeks(fy) {
+  const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
+  if (!rows.length) return null;
+  const best = rows.reduce((a, b) => (b.actual > a.actual ? b : a));
+  const worst = rows.reduce((a, b) => (b.actual < a.actual ? b : a));
+  return { best, worst };
 }
 
 function renderRevenueChart() {
@@ -377,7 +519,7 @@ function renderRevenueChart() {
   datasets.push({
     label: `FY${state.selectedFY} target`,
     data: targetValues,
-    borderColor: '#21201c',
+    borderColor: '#12213d',
     borderDash: [4, 4],
     borderWidth: 1.5,
     pointRadius: 0,
@@ -388,8 +530,16 @@ function renderRevenueChart() {
   state.charts.revenue = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
-    options: chartOptions('£')
+    options: chartOptions('£', false, eventsForFY(state.selectedFY))
   });
+
+  const bw = bestWorstWeeks(state.selectedFY);
+  const el = document.getElementById('revenueBestWorst');
+  if (el) {
+    el.textContent = bw
+      ? `Best week so far: Wk${bw.best.week_number} · ${fmtGBP(bw.best.actual)}  ·  Softest week: Wk${bw.worst.week_number} · ${fmtGBP(bw.worst.actual)}`
+      : '';
+  }
 }
 
 function renderOnlineChart() {
@@ -426,7 +576,7 @@ function renderOnlineChart() {
   state.charts.online = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
-    options: chartOptions(prefix, isPct)
+    options: chartOptions(prefix, isPct, eventsForFY(state.selectedFY))
   });
 }
 
@@ -437,14 +587,13 @@ function renderChannelTrendChart() {
   const fy = state.selectedFY;
 
   const totals = channelTotalsForFY(state.channelDaily, fy);
-  const topChannels = Object.entries(totals)
-    .sort((a, b) => b[1].revenue - a[1].revenue)
-    .slice(0, 8)
-    .map(([channel]) => channel);
-
   const series = channelWeeklySeriesForFY(state.channelDaily, fy);
 
-  const datasets = topChannels.map((channel, idx) => {
+  const channelsToShow = state.channelFocus
+    ? [state.channelFocus]
+    : Object.entries(totals).sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 8).map(([c]) => c);
+
+  const datasets = channelsToShow.map((channel, idx) => {
     const weekly = series[channel] || {};
     const values = labels.map((w) => {
       if (!isWeekComplete(fy, w)) return null;
@@ -456,7 +605,7 @@ function renderChannelTrendChart() {
       label: channel,
       data: values,
       borderColor: CHANNEL_COLORS[idx % CHANNEL_COLORS.length],
-      borderWidth: 2,
+      borderWidth: state.channelFocus ? 3 : 2,
       pointRadius: 0,
       tension: 0.25,
       spanGaps: true
@@ -469,16 +618,30 @@ function renderChannelTrendChart() {
   state.charts.channelTrend = new Chart(ctx, {
     type: 'line',
     data: { labels, datasets },
-    options: chartOptions(prefix)
+    options: chartOptions(prefix, false, eventsForFY(fy))
   });
+
+  const focusNote = document.getElementById('channelTrendFocusNote');
+  if (focusNote) {
+    focusNote.innerHTML = state.channelFocus
+      ? `Showing <strong>${state.channelFocus}</strong> only — <button id="clearChannelFocusBtn" type="button">Show top 8 instead</button>`
+      : '';
+    const clearBtn = document.getElementById('clearChannelFocusBtn');
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+      state.channelFocus = null;
+      renderChannelTrendChart();
+      renderChannelTable();
+    });
+  }
 }
 
-function chartOptions(prefix = '', isPct = false) {
+function chartOptions(prefix = '', isPct = false, events = []) {
   return {
     responsive: true,
     interaction: { mode: 'index', intersect: false },
     plugins: {
       legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 } } },
+      eventAnnotations: { events },
       tooltip: {
         callbacks: {
           label: (item) => {
@@ -503,23 +666,84 @@ function chartOptions(prefix = '', isPct = false) {
   };
 }
 
-function renderChannelTable() {
+const CHANNEL_SORT_KEYS = ['channel', 'sessions', 'transactions', 'revenue', 'cvr', 'aov', 'item_views'];
+
+function channelTableRows() {
   const totals = channelTotalsForFY(state.channelDaily, state.selectedFY);
-  const rows = Object.entries(totals).sort((a, b) => b[1].revenue - a[1].revenue);
+  const rows = Object.entries(totals).map(([channel, t]) => ({
+    channel,
+    sessions: t.sessions,
+    transactions: t.transactions,
+    revenue: t.revenue,
+    cvr: t.sessions ? t.transactions / t.sessions : 0,
+    aov: t.transactions ? t.revenue / t.transactions : 0,
+    item_views: t.item_views
+  }));
+  const { key, dir } = state.channelSort;
+  rows.sort((a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
+    return dir === 'asc' ? cmp : -cmp;
+  });
+  return rows;
+}
+
+function renderChannelTable() {
+  const rows = channelTableRows();
   const tbody = document.getElementById('channelTableBody');
-  tbody.innerHTML = rows.map(([channel, t]) => {
-    const cvr = t.sessions ? t.transactions / t.sessions : 0;
-    const aov = t.transactions ? t.revenue / t.transactions : 0;
-    return `<tr>
-      <td>${channel}</td>
-      <td>${Math.round(t.sessions).toLocaleString('en-GB')}</td>
-      <td>${Math.round(t.transactions).toLocaleString('en-GB')}</td>
-      <td>${fmtGBP(t.revenue)}</td>
-      <td>${fmtPct(cvr, 2)}</td>
-      <td>${fmtGBP(aov)}</td>
-      <td>${Math.round(t.item_views).toLocaleString('en-GB')}</td>
-    </tr>`;
-  }).join('');
+  tbody.innerHTML = rows.map((r) => `
+    <tr class="channel-row${state.channelFocus === r.channel ? ' selected-row' : ''}" data-channel="${r.channel}">
+      <td>${r.channel}</td>
+      <td>${Math.round(r.sessions).toLocaleString('en-GB')}</td>
+      <td>${Math.round(r.transactions).toLocaleString('en-GB')}</td>
+      <td>${fmtGBP(r.revenue)}</td>
+      <td>${fmtPct(r.cvr, 2)}</td>
+      <td>${fmtGBP(r.aov)}</td>
+      <td>${Math.round(r.item_views).toLocaleString('en-GB')}</td>
+    </tr>
+  `).join('');
+
+  // Update sort-direction arrows in the header
+  document.querySelectorAll('#channelTable th[data-sort-key]').forEach((th) => {
+    const key = th.dataset.sortKey;
+    th.classList.toggle('sorted', key === state.channelSort.key);
+    th.querySelector('.sort-arrow').textContent =
+      key === state.channelSort.key ? (state.channelSort.dir === 'asc' ? '▲' : '▼') : '';
+  });
+
+  document.querySelectorAll('#channelTableBody tr.channel-row').forEach((tr) => {
+    tr.addEventListener('click', () => {
+      const channel = tr.dataset.channel;
+      state.channelFocus = state.channelFocus === channel ? null : channel;
+      renderChannelTable();
+      renderChannelTrendChart();
+    });
+  });
+}
+
+function exportChannelTableCSV() {
+  const rows = channelTableRows();
+  const header = ['Channel', 'Sessions', 'Transactions', 'Revenue', 'CVR%', 'AOV', 'Item views'];
+  const lines = [header.join(',')];
+  rows.forEach((r) => {
+    lines.push([
+      `"${r.channel}"`,
+      Math.round(r.sessions),
+      Math.round(r.transactions),
+      r.revenue.toFixed(2),
+      (r.cvr * 100).toFixed(2),
+      r.aov.toFixed(2),
+      Math.round(r.item_views)
+    ].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `channel-breakdown-FY${state.selectedFY}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function renderFYSelect() {
@@ -528,11 +752,18 @@ function renderFYSelect() {
   select.value = state.selectedFY;
   select.addEventListener('change', () => {
     state.selectedFY = parseInt(select.value, 10);
+    state.entryWeek = state.selectedFY === todayFYWeek.financial_year ? todayFYWeek.week_number : 1;
+    updateURL();
     renderAll();
   });
 }
 
 function renderAll() {
+  document.getElementById('entryWeekLabel').textContent = `Editing FY${state.selectedFY} · Week ${state.entryWeek}`;
+  const existing = state.manualRevenue.find((r) => r.financial_year === state.selectedFY && r.week_number === state.entryWeek);
+  document.getElementById('revenueActualInput').value = existing?.actual ?? '';
+  document.getElementById('revenueTargetInput').value = existing?.target ?? '';
+
   const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable];
   steps.forEach((step) => {
     try {
@@ -564,8 +795,44 @@ document.getElementById('channelTrendMetricToggle').addEventListener('click', (e
   renderChannelTrendChart();
 });
 
+document.getElementById('kpiCompareToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-mode]');
+  if (!btn) return;
+  document.querySelectorAll('#kpiCompareToggle button').forEach((b) => b.classList.remove('active'));
+  btn.classList.add('active');
+  state.kpiCompareMode = btn.dataset.mode;
+  renderKPIs();
+});
+
+document.getElementById('exportChannelCsvBtn').addEventListener('click', exportChannelTableCSV);
+
+document.querySelectorAll('#channelTable th[data-sort-key]').forEach((th) => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sortKey;
+    if (state.channelSort.key === key) {
+      state.channelSort.dir = state.channelSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      state.channelSort = { key, dir: 'desc' };
+    }
+    renderChannelTable();
+  });
+});
+
+document.getElementById('copyWeekLinkBtn').addEventListener('click', () => {
+  const url = new URL(window.location.href);
+  url.searchParams.set('fy', state.selectedFY);
+  url.searchParams.set('week', state.entryWeek);
+  navigator.clipboard.writeText(url.toString()).then(() => {
+    const status = document.getElementById('revenueSaveStatus');
+    status.textContent = 'Link copied';
+    setTimeout(() => { if (status.textContent === 'Link copied') status.textContent = ''; }, 2000);
+  }).catch(() => {
+    prompt('Copy this link:', url.toString());
+  });
+});
+
 document.getElementById('saveRevenueBtn').addEventListener('click', async () => {
-  const w = parseInt(document.getElementById('revenueActualInput').dataset.week || todayFYWeek.week_number, 10);
+  const w = state.entryWeek;
   const actual = document.getElementById('revenueActualInput').value;
   const target = document.getElementById('revenueTargetInput').value;
   const status = document.getElementById('revenueSaveStatus');
@@ -595,18 +862,39 @@ document.getElementById('saveRevenueBtn').addEventListener('click', async () => 
 // ---------------------------------------------------------------------------
 async function loadEverything() {
   document.getElementById('authStatus').textContent = 'Loading data…';
-  const [channelDaily, manual] = await Promise.all([
-    fetchChannelDaily(CONFIG.COMPARISON_YEARS),
-    fetchManualData()
-  ]);
-  state.channelDaily = channelDaily;
-  state.manualRevenue = manual.revenue || [];
-  document.getElementById('authStatus').textContent = 'Signed in';
-  document.getElementById('lastRefreshed').textContent = `Last refreshed ${new Date().toLocaleString('en-GB')}`;
-  renderAll();
+  document.body.classList.add('is-loading');
+  try {
+    const [channelDaily, manual] = await Promise.all([
+      fetchChannelDaily(CONFIG.COMPARISON_YEARS),
+      fetchManualData()
+    ]);
+    state.channelDaily = channelDaily;
+    state.manualRevenue = manual.revenue || [];
+    document.getElementById('authStatus').textContent = 'Signed in';
+    document.getElementById('lastRefreshed').textContent = `Last refreshed ${new Date().toLocaleString('en-GB')}`;
+    renderAll();
+  } finally {
+    document.body.classList.remove('is-loading');
+  }
+}
+
+function updateURL() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('fy', state.selectedFY);
+  url.searchParams.set('week', state.entryWeek);
+  history.replaceState(null, '', url.toString());
+}
+
+function applyURLParams() {
+  const params = new URLSearchParams(window.location.search);
+  const fy = parseInt(params.get('fy'), 10);
+  const week = parseInt(params.get('week'), 10);
+  if (CONFIG.COMPARISON_YEARS.includes(fy)) state.selectedFY = fy;
+  if (week >= 1 && week <= 52) state.entryWeek = week;
 }
 
 window.addEventListener('load', () => {
+  applyURLParams();
   renderFYSelect();
   initAuth();
   // Manual entry data doesn't need BigQuery auth - load it immediately so the

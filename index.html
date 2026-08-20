@@ -23,13 +23,41 @@
     </div>
   </header>
 
-  <div id="ledgerWrap">
+  <!-- Week picker + business revenue entry, together so it's obvious what you're editing -->
+  <section class="panel" id="weekEntryPanel">
+    <div class="panel-head">
+      <div>
+        <h2>Business revenue entry</h2>
+        <div class="sub">Click a week below, then enter the number — saved centrally, remembered by everyone</div>
+      </div>
+    </div>
     <div class="ledger" id="ledger"></div>
     <div class="ledger-caption" id="ledgerCaption">FY — · Week —</div>
-  </div>
+    <div class="entry-row" id="revenueEntryRow">
+      <span class="entry-week-label" id="entryWeekLabel">Editing week —</span>
+      <label>Actual revenue (£)
+        <input type="number" id="revenueActualInput" placeholder="e.g. 412000">
+      </label>
+      <label>Target (£)
+        <input type="number" id="revenueTargetInput" placeholder="optional">
+      </label>
+      <button id="saveRevenueBtn" class="primary">Save</button>
+      <button id="copyWeekLinkBtn" type="button">Copy link to this week</button>
+      <span class="status" id="revenueSaveStatus"></span>
+    </div>
+  </section>
 
-  <section class="kpi-row" id="kpiRow">
-    <!-- populated by app.js -->
+  <section class="kpi-row-wrap">
+    <div class="kpi-controls">
+      <span class="sub">Weekly comparison:</span>
+      <div class="metric-toggle" id="kpiCompareToggle">
+        <button data-mode="yoy" class="active">Year-on-year</button>
+        <button data-mode="wow">Week-on-week</button>
+      </div>
+    </div>
+    <section class="kpi-row" id="kpiRow">
+      <!-- populated by app.js -->
+    </section>
   </section>
 
   <!-- Weekly overall business revenue: target vs actual vs prior years -->
@@ -42,16 +70,7 @@
       <div class="sub" id="revenueUpdatedAt"></div>
     </div>
     <canvas id="revenueChart" height="90"></canvas>
-    <div class="entry-row" id="revenueEntryRow">
-      <label>This week's actual revenue (£)
-        <input type="number" id="revenueActualInput" placeholder="e.g. 412000">
-      </label>
-      <label>Target (£)
-        <input type="number" id="revenueTargetInput" placeholder="optional">
-      </label>
-      <button id="saveRevenueBtn" class="primary">Save</button>
-      <span class="status" id="revenueSaveStatus"></span>
-    </div>
+    <div class="chart-footnote" id="revenueBestWorst"></div>
   </section>
 
   <!-- Online performance -->
@@ -88,6 +107,7 @@
       </div>
     </div>
     <canvas id="channelTrendChart" height="100"></canvas>
+    <div class="chart-footnote" id="channelTrendFocusNote"></div>
   </section>
 
   <!-- Channel breakdown -->
@@ -95,19 +115,20 @@
     <div class="panel-head">
       <div>
         <h2>Channel breakdown</h2>
-        <div class="sub" id="channelSub">Selected financial year, all weeks to date</div>
+        <div class="sub" id="channelSub">Selected financial year, all weeks to date · click a row to isolate it in the trend chart above</div>
       </div>
+      <button id="exportChannelCsvBtn" type="button">Export CSV</button>
     </div>
     <table id="channelTable">
       <thead>
         <tr>
-          <th>Channel</th>
-          <th>Sessions</th>
-          <th>Transactions</th>
-          <th>Revenue</th>
-          <th>CVR%</th>
-          <th>AOV</th>
-          <th>Item views</th>
+          <th data-sort-key="channel">Channel <span class="sort-arrow"></span></th>
+          <th data-sort-key="sessions">Sessions <span class="sort-arrow"></span></th>
+          <th data-sort-key="transactions">Transactions <span class="sort-arrow"></span></th>
+          <th data-sort-key="revenue">Revenue <span class="sort-arrow"></span></th>
+          <th data-sort-key="cvr">CVR% <span class="sort-arrow"></span></th>
+          <th data-sort-key="aov">AOV <span class="sort-arrow"></span></th>
+          <th data-sort-key="item_views">Item views <span class="sort-arrow"></span></th>
         </tr>
       </thead>
       <tbody id="channelTableBody"></tbody>
