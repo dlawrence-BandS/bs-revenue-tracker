@@ -346,18 +346,20 @@ function focusWeek(w) {
   document.getElementById('revenueActualInput').value = existing?.actual ?? '';
   document.getElementById('revenueTargetInput').value = existing?.target ?? '';
   updateURL();
-  // Re-render just the ledger so the outlined "selected" tick moves without
-  // touching anything else on the page.
+  // Re-render the ledger (so the outlined "selected" tick moves) and the KPI
+  // row (which now shows whichever week is selected, not just "today").
   renderLedger();
+  renderKPIs();
 }
 
 // Trailing N complete weeks of a metric for a given FY, oldest first - used
 // to draw the little sparkline in each KPI card.
-function trailingWeeklySeries(fy, metricFn, count = 8) {
+function trailingWeeklySeries(fy, metricFn, count = 8, endWeek = null) {
   const weekly = weeklyTotalsForFY(state.channelDaily, fy);
   const lastComplete = fy === todayFYWeek.financial_year ? todayFYWeek.week_number - 1 : 52;
+  const end = endWeek != null ? Math.min(endWeek, lastComplete) : lastComplete;
   const values = [];
-  for (let w = Math.max(1, lastComplete - count + 1); w <= lastComplete; w++) {
+  for (let w = Math.max(1, end - count + 1); w <= end; w++) {
     const d = weekly[w];
     values.push(d ? metricFn(d) : null);
   }
@@ -458,7 +460,7 @@ function fyProjection(fy) {
 function renderKPIs() {
   const fy = state.selectedFY;
   const compareFY = state.kpiCompareMode === 'yoy' ? fy - 1 : fy;
-  const wk = state.selectedFY === todayFYWeek.financial_year ? todayFYWeek.week_number : 52;
+  const wk = state.entryWeek; // whichever week is selected in the ledger above - not necessarily "today"
   const compareWk = state.kpiCompareMode === 'yoy' ? wk : wk - 1;
 
   const curWeekRows = state.channelDaily.filter((r) => r.financial_year === fy && r.week_number === wk);
@@ -494,18 +496,18 @@ function renderKPIs() {
     { label: `Business revenue · wk ${wk}`, value: businessActual != null ? fmtGBP(businessActual) : 'Not entered',
       delta: businessDelta != null ? { text: `${businessDelta > 0 ? '+' : ''}${fmtPct(businessDelta)} vs target`, cls: businessDelta >= 0 ? 'up' : 'down' } : { text: businessTarget ? `Target ${fmtGBP(businessTarget)}` : '—', cls: 'flat' },
       spark: '' },
-    { label: 'Online revenue', value: fmtGBP(curRevenue), delta: deltaWithLabel(pctDelta(curRevenue, priorRevenue)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.revenue)) },
-    { label: 'Sessions', value: Math.round(curSessions).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curSessions, priorSessions)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.sessions)) },
-    { label: 'Transactions', value: Math.round(curTx).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curTx, priorTx)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.transactions)) },
-    { label: 'CVR', value: fmtPct(curCVR, 2), delta: deltaWithLabel(pctDelta(curCVR, priorCVR)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.sessions ? d.transactions / d.sessions : null))) },
-    { label: 'AOV', value: fmtGBP(curAOV), delta: deltaWithLabel(pctDelta(curAOV, priorAOV)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.transactions ? d.revenue / d.transactions : null))) },
-    { label: 'Item views', value: Math.round(curItemViews).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curItemViews, priorItemViews)),
-      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.item_views)) }
+    { label: `Online revenue · wk ${wk}`, value: fmtGBP(curRevenue), delta: deltaWithLabel(pctDelta(curRevenue, priorRevenue)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.revenue, 8, wk)) },
+    { label: `Sessions · wk ${wk}`, value: Math.round(curSessions).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curSessions, priorSessions)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.sessions, 8, wk)) },
+    { label: `Transactions · wk ${wk}`, value: Math.round(curTx).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curTx, priorTx)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.transactions, 8, wk)) },
+    { label: `CVR · wk ${wk}`, value: fmtPct(curCVR, 2), delta: deltaWithLabel(pctDelta(curCVR, priorCVR)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.sessions ? d.transactions / d.sessions : null), 8, wk)) },
+    { label: `AOV · wk ${wk}`, value: fmtGBP(curAOV), delta: deltaWithLabel(pctDelta(curAOV, priorAOV)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => (d.transactions ? d.revenue / d.transactions : null), 8, wk)) },
+    { label: `Item views · wk ${wk}`, value: Math.round(curItemViews).toLocaleString('en-GB'), delta: deltaWithLabel(pctDelta(curItemViews, priorItemViews)),
+      spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.item_views, 8, wk)) }
   ];
 
   const proj = fyProjection(fy);
