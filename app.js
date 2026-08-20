@@ -386,93 +386,73 @@ function sparklineSVG(values) {
   </svg>`;
 }
 
-// Year-end forecast. Uses last year's week-by-week shape (not a flat
-// average) for the weeks still to come, scaled by the YoY growth seen in
-// the weeks already entered this year - so a Christmas or sale week later
-// in the year is projected to actually look like a Christmas or sale week,
-// not 1/52nd of the annual total. Falls back to a flat run-rate for any
-// week with no comparable prior-year figure. Needs at least 3 entered
+// "At this pace, FY finishes at £X" - based on actual weeks entered so far
+// this year, projected across the remaining weeks. Needs at least 3 entered
 // weeks to be worth showing.
-function fyForecast(fy) {
-  const actualRows = state.manualRevenue
-    .filter((r) => r.financial_year === fy && r.actual != null)
-    .sort((a, b) => a.week_number - b.week_number);
-  if (actualRows.length < 3) return null;
-
-  const priorByWeek = {};
-  state.manualRevenue
-    .filter((r) => r.financial_year === fy - 1 && r.actual != null)
-    .forEach((r) => { priorByWeek[r.week_number] = r.actual; });
-
-  const weeklyActual = {};
-  actualRows.forEach((r) => { weeklyActual[r.week_number] = r.actual; });
-  const lastEnteredWeek = actualRows[actualRows.length - 1].week_number;
-
-  // Average YoY growth across weeks that have both this year's and last
-  // year's actuals - this is the multiplier applied to last year's shape.
-  let growthSum = 0;
-  let growthCount = 0;
-  actualRows.forEach((r) => {
-    const prior = priorByWeek[r.week_number];
-    if (prior) {
-      growthSum += r.actual / prior;
-      growthCount += 1;
+// Typical cumulative share of the year's revenue reached by the end of each
+// week, averaged across whichever prior financial years have (near) complete
+// data. This is what makes the projection seasonal instead of flat - a
+// furniture retailer doesn't sell evenly across 52 weeks, so "average the
+// weeks so far and multiply by 52" badly over/under-shoots around big swings
+// like garden furniture season or January.
+function seasonalCumulativeCurve() {
+  const historicalYears = CONFIG.COMPARISON_YEARS.filter((y) => y < todayFYWeek.financial_year);
+  const curves = [];
+  historicalYears.forEach((fy) => {
+    const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
+    if (rows.length < 40) return; // too sparse a year to trust its shape
+    const byWeek = {};
+    rows.forEach((r) => { byWeek[r.week_number] = r.actual; });
+    const total = rows.reduce((a, r) => a + r.actual, 0);
+    if (!total) return;
+    let running = 0;
+    const cum = [0];
+    for (let w = 1; w <= 52; w++) {
+      running += byWeek[w] || 0;
+      cum[w] = running / total;
     }
+    curves.push(cum);
   });
-  const avgGrowth = growthCount >= 3 ? growthSum / growthCount : null;
-  const flatAvgWeekly = actualRows.reduce((a, r) => a + r.actual, 0) / actualRows.length;
-
-  const weeklyForecast = {};
-  for (let w = 1; w <= 52; w += 1) {
-    if (weeklyActual[w] != null) continue;
-    const prior = priorByWeek[w];
-    weeklyForecast[w] = (prior != null && avgGrowth != null) ? prior * avgGrowth : flatAvgWeekly;
+  if (!curves.length) return null;
+  const avg = [0];
+  for (let w = 1; w <= 52; w++) {
+    avg[w] = curves.reduce((a, c) => a + c[w], 0) / curves.length;
   }
+  return avg; // avg[w] = typical cumulative fraction of the year reached by end of week w
+}
 
-  const cumulativeActual = [];
-  const cumulativeForecast = [];
-  let runningActual = 0;
-  let runningForecast = 0;
-  for (let w = 1; w <= 52; w += 1) {
-    if (weeklyActual[w] != null) {
-      runningActual += weeklyActual[w];
-      runningForecast = runningActual;
-      cumulativeActual.push(runningActual);
-      cumulativeForecast.push(w === lastEnteredWeek ? runningForecast : null);
-    } else {
-      runningForecast += weeklyForecast[w];
-      cumulativeActual.push(null);
-      cumulativeForecast.push(runningForecast);
-    }
+function fyProjection(fy) {
+  const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
+  if (rows.length < 3) return null;
+  const lastWeek = Math.max(...rows.map((r) => r.week_number));
+  if (lastWeek >= 52) return null; // year's already complete, nothing to project
+
+  const cumulativeActual = rows
+    .filter((r) => r.week_number <= lastWeek)
+    .reduce((a, r) => a + r.actual, 0);
+
+  const curve = seasonalCumulativeCurve();
+  let projectedTotal;
+  let method;
+  if (curve && curve[lastWeek] > 0.02) {
+    projectedTotal = cumulativeActual / curve[lastWeek];
+    method = 'seasonal';
+  } else {
+    // Not enough historical shape to trust yet (e.g. this tracker is brand
+    // new) - fall back to a flat average rather than showing nothing.
+    const avgWeekly = cumulativeActual / lastWeek;
+    projectedTotal = avgWeekly * 52;
+    method = 'flat';
   }
-  const projectedTotal = runningForecast;
 
   const targetRows = state.manualRevenue.filter((r) => r.financial_year === fy && r.target != null);
   let annualTarget = null;
-  let cumulativeTarget = null;
-  if (targetRows.length >= 3) {
-    const weeklyTarget = {};
-    targetRows.forEach((r) => { weeklyTarget[r.week_number] = r.target; });
+  if (targetRows.length >= 26) { // only trust this if at least half the year has a target set
     const avgTarget = targetRows.reduce((a, r) => a + r.target, 0) / targetRows.length;
-    cumulativeTarget = [];
-    let runningTarget = 0;
-    for (let w = 1; w <= 52; w += 1) {
-      runningTarget += weeklyTarget[w] != null ? weeklyTarget[w] : avgTarget;
-      cumulativeTarget.push(runningTarget);
-    }
-    annualTarget = runningTarget;
+    annualTarget = avgTarget * 52;
   }
 
-  return {
-    weeksEntered: actualRows.length,
-    lastEnteredWeek,
-    avgGrowth,
-    projectedTotal,
-    annualTarget,
-    cumulativeActual,
-    cumulativeForecast,
-    cumulativeTarget
-  };
+  return { projectedTotal, annualTarget, weeksEntered: rows.length, lastWeek, method, curve };
 }
 
 function renderKPIs() {
@@ -528,15 +508,16 @@ function renderKPIs() {
       spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.item_views)) }
   ];
 
-  const proj = fyForecast(fy);
+  const proj = fyProjection(fy);
   if (proj) {
     const vsTarget = proj.annualTarget ? (proj.projectedTotal - proj.annualTarget) / proj.annualTarget : null;
+    const methodNote = proj.method === 'flat' ? ' (flat estimate — not enough history for a seasonal one)' : '';
     kpis.push({
       label: `Projected FY total · from ${proj.weeksEntered}wk`,
       value: fmtGBP(proj.projectedTotal),
       delta: vsTarget != null
-        ? { text: `${vsTarget > 0 ? '+' : ''}${fmtPct(vsTarget)} vs annual target`, cls: vsTarget >= 0 ? 'up' : 'down' }
-        : { text: 'Not enough target data to compare', cls: 'flat' },
+        ? { text: `${vsTarget > 0 ? '+' : ''}${fmtPct(vsTarget)} vs annualised target`, cls: vsTarget >= 0 ? 'up' : 'down' }
+        : { text: `Not enough target data to compare${methodNote}`, cls: 'flat' },
       spark: ''
     });
   }
@@ -595,6 +576,31 @@ function renderRevenueChart() {
     spanGaps: true
   });
 
+  const proj = fyProjection(state.selectedFY);
+  if (proj && proj.curve) {
+    const forecastValues = labels.map(() => null);
+    const lastActualRow = state.manualRevenue.find(
+      (r) => r.financial_year === state.selectedFY && r.week_number === proj.lastWeek
+    );
+    // Anchor the dashed forecast line to the last real point so it visibly
+    // continues the solid line rather than floating separately.
+    forecastValues[proj.lastWeek - 1] = lastActualRow ? lastActualRow.actual : null;
+    for (let w = proj.lastWeek + 1; w <= 52; w++) {
+      const weeklyShare = proj.curve[w] - proj.curve[w - 1];
+      forecastValues[w - 1] = proj.projectedTotal * weeklyShare;
+    }
+    datasets.push({
+      label: `FY${state.selectedFY} forecast`,
+      data: forecastValues,
+      borderColor: '#c98a2b',
+      borderDash: [2, 3],
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.25,
+      spanGaps: true
+    });
+  }
+
   if (state.charts.revenue) state.charts.revenue.destroy();
   state.charts.revenue = new Chart(ctx, {
     type: 'line',
@@ -609,69 +615,16 @@ function renderRevenueChart() {
       ? `Best week so far: Wk${bw.best.week_number} · ${fmtGBP(bw.best.actual)}  ·  Softest week: Wk${bw.worst.week_number} · ${fmtGBP(bw.worst.actual)}`
       : '';
   }
-}
 
-function renderForecastChart() {
-  const canvas = document.getElementById('forecastChart');
-  const summary = document.getElementById('forecastSummary');
-  if (!canvas) return;
-  const fy = state.selectedFY;
-  const forecast = fyForecast(fy);
-
-  if (!forecast) {
-    if (state.charts.forecast) { state.charts.forecast.destroy(); state.charts.forecast = null; }
-    if (summary) summary.textContent = `Enter at least 3 weeks of actual revenue for FY${fy} to see a year-end forecast.`;
-    return;
-  }
-
-  const labels = Array.from({ length: 52 }, (_, i) => i + 1);
-  const datasets = [
-    {
-      label: 'Actual (cumulative)',
-      data: forecast.cumulativeActual,
-      borderColor: '#12213d',
-      borderWidth: 3,
-      pointRadius: 0,
-      spanGaps: false
-    },
-    {
-      label: 'Forecast (cumulative)',
-      data: forecast.cumulativeForecast,
-      borderColor: '#c98a2b',
-      borderDash: [6, 4],
-      borderWidth: 2.5,
-      pointRadius: 0,
-      spanGaps: false
+  const forecastNote = document.getElementById('revenueForecastNote');
+  if (forecastNote) {
+    if (proj) {
+      forecastNote.textContent = proj.method === 'seasonal'
+        ? `Dashed gold from Wk${proj.lastWeek} is a forecast — projects to £${Math.round(proj.projectedTotal).toLocaleString('en-GB')} using the typical week-by-week shape of FY${CONFIG.COMPARISON_YEARS.filter((y) => y < todayFYWeek.financial_year).join('/')}, not a flat average.`
+        : `Dashed gold from Wk${proj.lastWeek} is a rough forecast (flat average) — not enough complete prior years yet to base it on seasonal shape.`;
+    } else {
+      forecastNote.textContent = '';
     }
-  ];
-  if (forecast.cumulativeTarget) {
-    datasets.push({
-      label: 'Annual target (cumulative)',
-      data: forecast.cumulativeTarget,
-      borderColor: '#7a4fa0',
-      borderDash: [2, 3],
-      borderWidth: 1.5,
-      pointRadius: 0
-    });
-  }
-
-  if (state.charts.forecast) state.charts.forecast.destroy();
-  state.charts.forecast = new Chart(canvas, {
-    type: 'line',
-    data: { labels, datasets },
-    options: chartOptions('£', false, eventsForFY(fy))
-  });
-
-  if (summary) {
-    const vsTarget = forecast.annualTarget != null
-      ? (forecast.projectedTotal - forecast.annualTarget) / forecast.annualTarget
-      : null;
-    const growthNote = forecast.avgGrowth != null
-      ? `${forecast.avgGrowth >= 1 ? '+' : ''}${fmtPct(forecast.avgGrowth - 1)} vs FY${fy - 1}`
-      : 'a flat run-rate — no comparable FY' + (fy - 1) + ' weeks to base seasonality on';
-    summary.innerHTML = `Projected FY${fy} total: <strong>${fmtGBP(forecast.projectedTotal)}</strong>` +
-      (vsTarget != null ? ` (${vsTarget >= 0 ? '+' : ''}${fmtPct(vsTarget)} vs annual target)` : ' — no annual target set yet') +
-      ` · weeks 1–${forecast.lastEnteredWeek} are actual, the rest follow FY${fy - 1}'s week-by-week shape at ${growthNote}.`;
   }
 }
 
@@ -711,83 +664,6 @@ function renderOnlineChart() {
     data: { labels, datasets },
     options: chartOptions(prefix, isPct, eventsForFY(state.selectedFY))
   });
-}
-
-// Business revenue (the number you type in, includes stores + everything
-// else) plotted against GA4's online revenue for the same weeks, so you can
-// see what share of the total number the website's actually accounting for.
-function renderComparisonChart() {
-  const canvas = document.getElementById('comparisonChart');
-  const summary = document.getElementById('comparisonSummary');
-  if (!canvas) return;
-  const fy = state.selectedFY;
-  const labels = Array.from({ length: 52 }, (_, i) => i + 1);
-  const weeklyOnline = weeklyTotalsForFY(state.channelDaily, fy);
-
-  const businessValues = labels.map((w) => {
-    const row = state.manualRevenue.find((r) => r.financial_year === fy && r.week_number === w);
-    return row ? row.actual : null;
-  });
-  const onlineValues = labels.map((w) => {
-    // Unlike the trend charts, this panel includes the in-progress current
-    // week too - it's about tracking against the business number in real
-    // time, and a partial week is still useful context for that. Weeks in
-    // the future (no data at all yet) stay blank.
-    const isFuture = fy > todayFYWeek.financial_year || (fy === todayFYWeek.financial_year && w > todayFYWeek.week_number);
-    if (isFuture) return null;
-    const d = weeklyOnline[w];
-    return d ? (d.revenue || null) : null;
-  });
-  const shareValues = labels.map((w, i) => {
-    const biz = businessValues[i];
-    const onl = onlineValues[i];
-    return (biz && onl) ? onl / biz : null;
-  });
-
-  if (state.charts.comparison) state.charts.comparison.destroy();
-  state.charts.comparison = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Business revenue (entered)', data: businessValues, borderColor: '#12213d', borderWidth: 2.5, pointRadius: 0, spanGaps: true },
-        { label: 'GA4 online revenue', data: onlineValues, borderColor: '#c98a2b', borderWidth: 2.5, pointRadius: 0, spanGaps: true }
-      ]
-    },
-    options: {
-      responsive: true,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 } } },
-        eventAnnotations: { events: eventsForFY(fy) },
-        tooltip: {
-          callbacks: {
-            label: (item) => item.raw == null ? `${item.dataset.label}: —` : `${item.dataset.label}: ${fmtGBP(item.raw)}`,
-            afterBody: (items) => {
-              const idx = items[0]?.dataIndex;
-              const share = idx != null ? shareValues[idx] : null;
-              return share != null ? [`GA4 revenue is ${fmtPct(share)} of business revenue this week`] : [];
-            }
-          }
-        }
-      },
-      scales: {
-        x: { title: { display: true, text: 'Financial week' }, grid: { display: false } },
-        y: {
-          ticks: { callback: (v) => '£' + v.toLocaleString('en-GB') },
-          grid: { color: '#e2e9f1' }
-        }
-      }
-    }
-  });
-
-  if (summary) {
-    const ytdBiz = businessValues.filter((v) => v != null).reduce((a, b) => a + b, 0);
-    const ytdOnl = onlineValues.reduce((a, v, i) => (businessValues[i] != null && v != null ? a + v : a), 0);
-    summary.textContent = (ytdBiz && ytdOnl)
-      ? `Year to date: GA4-tracked online revenue is ${fmtPct(ytdOnl / ytdBiz)} of the business revenue entered so far for FY${fy}. The gap is stores plus anything GA4 doesn't attribute — not a data error.`
-      : 'Enter some weeks of business revenue to see how it compares against GA4.';
-  }
 }
 
 function renderChannelTrendChart() {
@@ -974,7 +850,7 @@ function renderAll() {
   document.getElementById('revenueActualInput').value = existing?.actual ?? '';
   document.getElementById('revenueTargetInput').value = existing?.target ?? '';
 
-  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderForecastChart, renderOnlineChart, renderComparisonChart, renderChannelTrendChart, renderChannelTable];
+  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable];
   steps.forEach((step) => {
     try {
       step();
