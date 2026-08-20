@@ -73,6 +73,18 @@
     <div class="chart-footnote" id="revenueBestWorst"></div>
   </section>
 
+  <!-- Year-end forecast -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Year-end forecast</h2>
+        <div class="sub">Cumulative actual vs forecast vs annual target</div>
+      </div>
+    </div>
+    <canvas id="forecastChart" height="90"></canvas>
+    <div class="chart-footnote" id="forecastSummary"></div>
+  </section>
+
   <!-- Online performance -->
   <section class="panel">
     <div class="panel-head">
@@ -90,6 +102,18 @@
       </div>
     </div>
     <canvas id="onlineChart" height="90"></canvas>
+  </section>
+
+  <!-- Business revenue vs GA4 online revenue -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Online vs business revenue</h2>
+        <div class="sub">How much of the overall business number GA4 is picking up, week by week</div>
+      </div>
+    </div>
+    <canvas id="comparisonChart" height="90"></canvas>
+    <div class="chart-footnote" id="comparisonSummary"></div>
   </section>
 
   <!-- Channel trends -->

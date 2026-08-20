@@ -386,24 +386,93 @@ function sparklineSVG(values) {
   </svg>`;
 }
 
-// "At this pace, FY finishes at £X" - based on actual weeks entered so far
-// this year, projected across the remaining weeks. Needs at least 3 entered
+// Year-end forecast. Uses last year's week-by-week shape (not a flat
+// average) for the weeks still to come, scaled by the YoY growth seen in
+// the weeks already entered this year - so a Christmas or sale week later
+// in the year is projected to actually look like a Christmas or sale week,
+// not 1/52nd of the annual total. Falls back to a flat run-rate for any
+// week with no comparable prior-year figure. Needs at least 3 entered
 // weeks to be worth showing.
-function fyProjection(fy) {
-  const rows = state.manualRevenue.filter((r) => r.financial_year === fy && r.actual != null);
-  if (rows.length < 3) return null;
-  const sumActual = rows.reduce((a, r) => a + r.actual, 0);
-  const avgWeekly = sumActual / rows.length;
-  const projectedTotal = sumActual + avgWeekly * (52 - rows.length);
+function fyForecast(fy) {
+  const actualRows = state.manualRevenue
+    .filter((r) => r.financial_year === fy && r.actual != null)
+    .sort((a, b) => a.week_number - b.week_number);
+  if (actualRows.length < 3) return null;
+
+  const priorByWeek = {};
+  state.manualRevenue
+    .filter((r) => r.financial_year === fy - 1 && r.actual != null)
+    .forEach((r) => { priorByWeek[r.week_number] = r.actual; });
+
+  const weeklyActual = {};
+  actualRows.forEach((r) => { weeklyActual[r.week_number] = r.actual; });
+  const lastEnteredWeek = actualRows[actualRows.length - 1].week_number;
+
+  // Average YoY growth across weeks that have both this year's and last
+  // year's actuals - this is the multiplier applied to last year's shape.
+  let growthSum = 0;
+  let growthCount = 0;
+  actualRows.forEach((r) => {
+    const prior = priorByWeek[r.week_number];
+    if (prior) {
+      growthSum += r.actual / prior;
+      growthCount += 1;
+    }
+  });
+  const avgGrowth = growthCount >= 3 ? growthSum / growthCount : null;
+  const flatAvgWeekly = actualRows.reduce((a, r) => a + r.actual, 0) / actualRows.length;
+
+  const weeklyForecast = {};
+  for (let w = 1; w <= 52; w += 1) {
+    if (weeklyActual[w] != null) continue;
+    const prior = priorByWeek[w];
+    weeklyForecast[w] = (prior != null && avgGrowth != null) ? prior * avgGrowth : flatAvgWeekly;
+  }
+
+  const cumulativeActual = [];
+  const cumulativeForecast = [];
+  let runningActual = 0;
+  let runningForecast = 0;
+  for (let w = 1; w <= 52; w += 1) {
+    if (weeklyActual[w] != null) {
+      runningActual += weeklyActual[w];
+      runningForecast = runningActual;
+      cumulativeActual.push(runningActual);
+      cumulativeForecast.push(w === lastEnteredWeek ? runningForecast : null);
+    } else {
+      runningForecast += weeklyForecast[w];
+      cumulativeActual.push(null);
+      cumulativeForecast.push(runningForecast);
+    }
+  }
+  const projectedTotal = runningForecast;
 
   const targetRows = state.manualRevenue.filter((r) => r.financial_year === fy && r.target != null);
   let annualTarget = null;
-  if (targetRows.length >= 26) { // only trust this if at least half the year has a target set
+  let cumulativeTarget = null;
+  if (targetRows.length >= 3) {
+    const weeklyTarget = {};
+    targetRows.forEach((r) => { weeklyTarget[r.week_number] = r.target; });
     const avgTarget = targetRows.reduce((a, r) => a + r.target, 0) / targetRows.length;
-    annualTarget = avgTarget * 52;
+    cumulativeTarget = [];
+    let runningTarget = 0;
+    for (let w = 1; w <= 52; w += 1) {
+      runningTarget += weeklyTarget[w] != null ? weeklyTarget[w] : avgTarget;
+      cumulativeTarget.push(runningTarget);
+    }
+    annualTarget = runningTarget;
   }
 
-  return { projectedTotal, annualTarget, weeksEntered: rows.length };
+  return {
+    weeksEntered: actualRows.length,
+    lastEnteredWeek,
+    avgGrowth,
+    projectedTotal,
+    annualTarget,
+    cumulativeActual,
+    cumulativeForecast,
+    cumulativeTarget
+  };
 }
 
 function renderKPIs() {
@@ -459,14 +528,14 @@ function renderKPIs() {
       spark: sparklineSVG(trailingWeeklySeries(fy, (d) => d.item_views)) }
   ];
 
-  const proj = fyProjection(fy);
+  const proj = fyForecast(fy);
   if (proj) {
     const vsTarget = proj.annualTarget ? (proj.projectedTotal - proj.annualTarget) / proj.annualTarget : null;
     kpis.push({
       label: `Projected FY total · from ${proj.weeksEntered}wk`,
       value: fmtGBP(proj.projectedTotal),
       delta: vsTarget != null
-        ? { text: `${vsTarget > 0 ? '+' : ''}${fmtPct(vsTarget)} vs annualised target`, cls: vsTarget >= 0 ? 'up' : 'down' }
+        ? { text: `${vsTarget > 0 ? '+' : ''}${fmtPct(vsTarget)} vs annual target`, cls: vsTarget >= 0 ? 'up' : 'down' }
         : { text: 'Not enough target data to compare', cls: 'flat' },
       spark: ''
     });
@@ -542,6 +611,70 @@ function renderRevenueChart() {
   }
 }
 
+function renderForecastChart() {
+  const canvas = document.getElementById('forecastChart');
+  const summary = document.getElementById('forecastSummary');
+  if (!canvas) return;
+  const fy = state.selectedFY;
+  const forecast = fyForecast(fy);
+
+  if (!forecast) {
+    if (state.charts.forecast) { state.charts.forecast.destroy(); state.charts.forecast = null; }
+    if (summary) summary.textContent = `Enter at least 3 weeks of actual revenue for FY${fy} to see a year-end forecast.`;
+    return;
+  }
+
+  const labels = Array.from({ length: 52 }, (_, i) => i + 1);
+  const datasets = [
+    {
+      label: 'Actual (cumulative)',
+      data: forecast.cumulativeActual,
+      borderColor: '#12213d',
+      borderWidth: 3,
+      pointRadius: 0,
+      spanGaps: false
+    },
+    {
+      label: 'Forecast (cumulative)',
+      data: forecast.cumulativeForecast,
+      borderColor: '#c98a2b',
+      borderDash: [6, 4],
+      borderWidth: 2.5,
+      pointRadius: 0,
+      spanGaps: false
+    }
+  ];
+  if (forecast.cumulativeTarget) {
+    datasets.push({
+      label: 'Annual target (cumulative)',
+      data: forecast.cumulativeTarget,
+      borderColor: '#7a4fa0',
+      borderDash: [2, 3],
+      borderWidth: 1.5,
+      pointRadius: 0
+    });
+  }
+
+  if (state.charts.forecast) state.charts.forecast.destroy();
+  state.charts.forecast = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: chartOptions('£', false, eventsForFY(fy))
+  });
+
+  if (summary) {
+    const vsTarget = forecast.annualTarget != null
+      ? (forecast.projectedTotal - forecast.annualTarget) / forecast.annualTarget
+      : null;
+    const growthNote = forecast.avgGrowth != null
+      ? `${forecast.avgGrowth >= 1 ? '+' : ''}${fmtPct(forecast.avgGrowth - 1)} vs FY${fy - 1}`
+      : 'a flat run-rate — no comparable FY' + (fy - 1) + ' weeks to base seasonality on';
+    summary.innerHTML = `Projected FY${fy} total: <strong>${fmtGBP(forecast.projectedTotal)}</strong>` +
+      (vsTarget != null ? ` (${vsTarget >= 0 ? '+' : ''}${fmtPct(vsTarget)} vs annual target)` : ' — no annual target set yet') +
+      ` · weeks 1–${forecast.lastEnteredWeek} are actual, the rest follow FY${fy - 1}'s week-by-week shape at ${growthNote}.`;
+  }
+}
+
 function renderOnlineChart() {
   const ctx = document.getElementById('onlineChart');
   const labels = Array.from({ length: 52 }, (_, i) => i + 1);
@@ -578,6 +711,83 @@ function renderOnlineChart() {
     data: { labels, datasets },
     options: chartOptions(prefix, isPct, eventsForFY(state.selectedFY))
   });
+}
+
+// Business revenue (the number you type in, includes stores + everything
+// else) plotted against GA4's online revenue for the same weeks, so you can
+// see what share of the total number the website's actually accounting for.
+function renderComparisonChart() {
+  const canvas = document.getElementById('comparisonChart');
+  const summary = document.getElementById('comparisonSummary');
+  if (!canvas) return;
+  const fy = state.selectedFY;
+  const labels = Array.from({ length: 52 }, (_, i) => i + 1);
+  const weeklyOnline = weeklyTotalsForFY(state.channelDaily, fy);
+
+  const businessValues = labels.map((w) => {
+    const row = state.manualRevenue.find((r) => r.financial_year === fy && r.week_number === w);
+    return row ? row.actual : null;
+  });
+  const onlineValues = labels.map((w) => {
+    // Unlike the trend charts, this panel includes the in-progress current
+    // week too - it's about tracking against the business number in real
+    // time, and a partial week is still useful context for that. Weeks in
+    // the future (no data at all yet) stay blank.
+    const isFuture = fy > todayFYWeek.financial_year || (fy === todayFYWeek.financial_year && w > todayFYWeek.week_number);
+    if (isFuture) return null;
+    const d = weeklyOnline[w];
+    return d ? (d.revenue || null) : null;
+  });
+  const shareValues = labels.map((w, i) => {
+    const biz = businessValues[i];
+    const onl = onlineValues[i];
+    return (biz && onl) ? onl / biz : null;
+  });
+
+  if (state.charts.comparison) state.charts.comparison.destroy();
+  state.charts.comparison = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Business revenue (entered)', data: businessValues, borderColor: '#12213d', borderWidth: 2.5, pointRadius: 0, spanGaps: true },
+        { label: 'GA4 online revenue', data: onlineValues, borderColor: '#c98a2b', borderWidth: 2.5, pointRadius: 0, spanGaps: true }
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'bottom', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 } } },
+        eventAnnotations: { events: eventsForFY(fy) },
+        tooltip: {
+          callbacks: {
+            label: (item) => item.raw == null ? `${item.dataset.label}: —` : `${item.dataset.label}: ${fmtGBP(item.raw)}`,
+            afterBody: (items) => {
+              const idx = items[0]?.dataIndex;
+              const share = idx != null ? shareValues[idx] : null;
+              return share != null ? [`GA4 revenue is ${fmtPct(share)} of business revenue this week`] : [];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Financial week' }, grid: { display: false } },
+        y: {
+          ticks: { callback: (v) => '£' + v.toLocaleString('en-GB') },
+          grid: { color: '#e2e9f1' }
+        }
+      }
+    }
+  });
+
+  if (summary) {
+    const ytdBiz = businessValues.filter((v) => v != null).reduce((a, b) => a + b, 0);
+    const ytdOnl = onlineValues.reduce((a, v, i) => (businessValues[i] != null && v != null ? a + v : a), 0);
+    summary.textContent = (ytdBiz && ytdOnl)
+      ? `Year to date: GA4-tracked online revenue is ${fmtPct(ytdOnl / ytdBiz)} of the business revenue entered so far for FY${fy}. The gap is stores plus anything GA4 doesn't attribute — not a data error.`
+      : 'Enter some weeks of business revenue to see how it compares against GA4.';
+  }
 }
 
 function renderChannelTrendChart() {
@@ -764,7 +974,7 @@ function renderAll() {
   document.getElementById('revenueActualInput').value = existing?.actual ?? '';
   document.getElementById('revenueTargetInput').value = existing?.target ?? '';
 
-  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable];
+  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderForecastChart, renderOnlineChart, renderComparisonChart, renderChannelTrendChart, renderChannelTable];
   steps.forEach((step) => {
     try {
       step();
