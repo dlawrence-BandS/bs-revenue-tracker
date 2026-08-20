@@ -59,7 +59,7 @@
     <div class="panel-head">
       <div>
         <h2>Online performance</h2>
-        <div class="sub">GA4 via BigQuery · by financial week</div>
+        <div class="sub">GA4 via BigQuery · by financial week · complete weeks only</div>
       </div>
       <div class="metric-toggle" id="onlineMetricToggle">
         <button data-metric="revenue" class="active">Revenue</button>
@@ -71,6 +71,23 @@
       </div>
     </div>
     <canvas id="onlineChart" height="90"></canvas>
+  </section>
+
+  <!-- Channel trends -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Channel trends</h2>
+        <div class="sub">Top 8 channels by revenue · selected financial year · complete weeks only</div>
+      </div>
+      <div class="metric-toggle" id="channelTrendMetricToggle">
+        <button data-metric="revenue" class="active">Revenue</button>
+        <button data-metric="sessions">Sessions</button>
+        <button data-metric="transactions">Transactions</button>
+        <button data-metric="item_views">Item views</button>
+      </div>
+    </div>
+    <canvas id="channelTrendChart" height="100"></canvas>
   </section>
 
   <!-- Channel breakdown -->
@@ -100,9 +117,10 @@
   <footer>
     <strong>Data & assumptions</strong> — Online metrics come from GA4 via BigQuery
     (<code>vw_channel_daily</code>), backfilled with your historical Supermetrics export
-    where BigQuery's export doesn't reach. Channel grouping is a simplified rebuild of
-    GA4's default channel logic — check it against a week of Supermetrics data before
-    trusting it fully. Overall business revenue is the one number you enter by hand
+    where BigQuery's export doesn't reach. Trend charts only show complete financial
+    weeks — the current week is still collecting in the background, it just won't
+    appear as a line until it's finished, so nothing looks like a sudden drop.
+    Channel grouping uses GA4's own <code>default_channel_group</code> field directly. Overall business revenue is the one number you enter by hand
     each week; everything downstream updates from it automatically.
     <div id="lastRefreshed" style="margin-top:8px;"></div>
   </footer>

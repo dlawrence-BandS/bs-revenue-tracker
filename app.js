@@ -174,11 +174,23 @@ const state = {
   channelDaily: [],   // rows across all comparison years
   manualRevenue: [],
   onlineMetric: 'revenue',
+  channelTrendMetric: 'revenue',
   charts: {}
 };
 
 const today = new Date();
 const todayFYWeek = fyWeekOf(new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())));
+
+// The current financial week is still being collected in the background all
+// week, but showing it on a trend line makes it look like a sudden drop
+// (it's only a few days of data next to 7 full days everywhere else). Trend
+// charts hide it until the week is actually finished; the KPI strip still
+// shows it deliberately, since that one's meant to show progress mid-week.
+function isWeekComplete(fy, week) {
+  if (fy < todayFYWeek.financial_year) return true;
+  if (fy > todayFYWeek.financial_year) return false;
+  return week < todayFYWeek.week_number;
+}
 
 // ---------------------------------------------------------------------------
 // Aggregation helpers
@@ -209,6 +221,29 @@ function channelTotalsForFY(rows, fy) {
   });
   return totals;
 }
+
+// One row per channel per week, for the channel trend chart.
+function channelWeeklySeriesForFY(rows, fy) {
+  const series = {};
+  rows.filter((r) => r.financial_year === fy).forEach((r) => {
+    if (!series[r.channel]) series[r.channel] = {};
+    if (!series[r.channel][r.week_number]) {
+      series[r.channel][r.week_number] = { sessions: 0, revenue: 0, transactions: 0, item_views: 0 };
+    }
+    const w = series[r.channel][r.week_number];
+    w.sessions += r.sessions;
+    w.revenue += r.revenue;
+    w.transactions += r.transactions;
+    w.item_views += r.item_views;
+  });
+  return series;
+}
+
+// Muted qualitative palette that still reads as part of the blue theme -
+// data lines need to be distinguishable, which a pure single-hue set can't
+// do at 8 channels, so this mixes in gold/teal/plum/slate around the core
+// brand blue.
+const CHANNEL_COLORS = ['#2f5c8a', '#c98a2b', '#1c7a63', '#7a4fa0', '#b23a3a', '#4c7fb0', '#8c6d46', '#5c6b7a'];
 
 function pctDelta(current, prior) {
   if (!prior) return null;
@@ -327,7 +362,7 @@ function renderRevenueChart() {
     return {
       label: `FY${fy} actual`,
       data: values,
-      borderColor: isCurrent ? '#a9772f' : `hsl(${30 + idx * 40}, 20%, 55%)`,
+      borderColor: isCurrent ? '#c98a2b' : `hsl(${205 + idx * 30}, 35%, 42%)`,
       borderWidth: isCurrent ? 3 : 1.5,
       pointRadius: 0,
       tension: 0.25,
@@ -365,6 +400,7 @@ function renderOnlineChart() {
   const datasets = CONFIG.COMPARISON_YEARS.map((fy, idx) => {
     const weekly = weeklyTotalsForFY(state.channelDaily, fy);
     const values = labels.map((w) => {
+      if (!isWeekComplete(fy, w)) return null;
       const d = weekly[w];
       if (!d) return null;
       if (metric === 'cvr') return d.sessions ? (d.transactions / d.sessions) : null;
@@ -375,7 +411,7 @@ function renderOnlineChart() {
     return {
       label: `FY${fy}`,
       data: values,
-      borderColor: isCurrent ? '#a9772f' : `hsl(${30 + idx * 40}, 20%, 55%)`,
+      borderColor: isCurrent ? '#c98a2b' : `hsl(${205 + idx * 30}, 35%, 42%)`,
       borderWidth: isCurrent ? 3 : 1.5,
       pointRadius: 0,
       tension: 0.25,
@@ -391,6 +427,49 @@ function renderOnlineChart() {
     type: 'line',
     data: { labels, datasets },
     options: chartOptions(prefix, isPct)
+  });
+}
+
+function renderChannelTrendChart() {
+  const ctx = document.getElementById('channelTrendChart');
+  const labels = Array.from({ length: 52 }, (_, i) => i + 1);
+  const metric = state.channelTrendMetric;
+  const fy = state.selectedFY;
+
+  const totals = channelTotalsForFY(state.channelDaily, fy);
+  const topChannels = Object.entries(totals)
+    .sort((a, b) => b[1].revenue - a[1].revenue)
+    .slice(0, 8)
+    .map(([channel]) => channel);
+
+  const series = channelWeeklySeriesForFY(state.channelDaily, fy);
+
+  const datasets = topChannels.map((channel, idx) => {
+    const weekly = series[channel] || {};
+    const values = labels.map((w) => {
+      if (!isWeekComplete(fy, w)) return null;
+      const d = weekly[w];
+      if (!d) return null;
+      return d[metric] || null;
+    });
+    return {
+      label: channel,
+      data: values,
+      borderColor: CHANNEL_COLORS[idx % CHANNEL_COLORS.length],
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.25,
+      spanGaps: true
+    };
+  });
+
+  const prefix = metric === 'revenue' ? '£' : '';
+
+  if (state.charts.channelTrend) state.charts.channelTrend.destroy();
+  state.charts.channelTrend = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: chartOptions(prefix)
   });
 }
 
@@ -418,7 +497,7 @@ function chartOptions(prefix = '', isPct = false) {
         ticks: {
           callback: (v) => isPct ? (v * 100).toFixed(0) + '%' : prefix + v.toLocaleString('en-GB')
         },
-        grid: { color: '#eee3d3' }
+        grid: { color: '#e2e9f1' }
       }
     }
   };
@@ -454,7 +533,7 @@ function renderFYSelect() {
 }
 
 function renderAll() {
-  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTable];
+  const steps = [renderLedger, renderKPIs, renderRevenueChart, renderOnlineChart, renderChannelTrendChart, renderChannelTable];
   steps.forEach((step) => {
     try {
       step();
@@ -474,6 +553,15 @@ document.getElementById('onlineMetricToggle').addEventListener('click', (e) => {
   btn.classList.add('active');
   state.onlineMetric = btn.dataset.metric;
   renderOnlineChart();
+});
+
+document.getElementById('channelTrendMetricToggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-metric]');
+  if (!btn) return;
+  document.querySelectorAll('#channelTrendMetricToggle button').forEach((b) => b.classList.remove('active'));
+  btn.classList.add('active');
+  state.channelTrendMetric = btn.dataset.metric;
+  renderChannelTrendChart();
 });
 
 document.getElementById('saveRevenueBtn').addEventListener('click', async () => {

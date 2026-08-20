@@ -1,15 +1,16 @@
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  --ink: #21201c;
-  --paper: #f6f3ec;
-  --panel: #fffdf9;
-  --rule: #dad3c3;
-  --brass: #a9772f;
-  --brass-soft: #f0e3cd;
-  --forest: #2f5d42;
-  --brick: #a8402f;
-  --ash: #6b675c;
+  --ink: #12213d;
+  --paper: #eef2f7;
+  --panel: #ffffff;
+  --rule: #d7e0ea;
+  --brass: #2f5c8a;
+  --brass-soft: #dce8f5;
+  --highlight: #c98a2b;
+  --forest: #1c7a63;
+  --brick: #b23a3a;
+  --ash: #5c6b7a;
 
   --font-display: 'Fraunces', serif;
   --font-body: 'Inter', sans-serif;
@@ -127,7 +128,7 @@ button.primary:hover { background: var(--brass); border-color: var(--brass); }
   height: 44px;
   border: none;
   border-radius: 2px;
-  background: #eae4d4;
+  background: #e2e9f1;
   position: relative;
   padding: 0;
 }
@@ -145,9 +146,9 @@ button.primary:hover { background: var(--brass); border-color: var(--brass); }
 
 .ledger button.tick:nth-child(4n) .num { display: block; }
 
-.ledger button.tick.has-data { background: #d8cba9; }
-.ledger button.tick.current { background: var(--brass); }
-.ledger button.tick.current .num { display: block; color: var(--brass); font-weight: 600; }
+.ledger button.tick.has-data { background: #a9c2da; }
+.ledger button.tick.current { background: var(--highlight); }
+.ledger button.tick.current .num { display: block; color: var(--highlight); font-weight: 600; }
 .ledger button.tick:hover { background: var(--ink); }
 
 .ledger-caption {
