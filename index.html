@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Revenue Tracker · Barker & Stonehouse</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <span class="mark">B&amp;S</span>
+      <h1>Revenue Tracker</h1>
+    </div>
+    <div class="top-controls">
+      <select id="fySelect"></select>
+      <span id="authStatus">Not signed in</span>
+      <button id="signInBtn" class="primary">Sign in with Google</button>
+    </div>
+  </header>
+
+  <div id="ledgerWrap">
+    <div class="ledger" id="ledger"></div>
+    <div class="ledger-caption" id="ledgerCaption">FY — · Week —</div>
+  </div>
+
+  <section class="kpi-row" id="kpiRow">
+    <!-- populated by app.js -->
+  </section>
+
+  <!-- Weekly overall business revenue: target vs actual vs prior years -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Weekly business revenue</h2>
+        <div class="sub">Whole-business actual, entered weekly · target vs prior years</div>
+      </div>
+      <div class="sub" id="revenueUpdatedAt"></div>
+    </div>
+    <canvas id="revenueChart" height="90"></canvas>
+    <div class="entry-row" id="revenueEntryRow">
+      <label>This week's actual revenue (£)
+        <input type="number" id="revenueActualInput" placeholder="e.g. 412000">
+      </label>
+      <label>Target (£)
+        <input type="number" id="revenueTargetInput" placeholder="optional">
+      </label>
+      <button id="saveRevenueBtn" class="primary">Save</button>
+      <span class="status" id="revenueSaveStatus"></span>
+    </div>
+  </section>
+
+  <!-- Online performance -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Online performance</h2>
+        <div class="sub">GA4 via BigQuery · by financial week</div>
+      </div>
+      <div class="metric-toggle" id="onlineMetricToggle">
+        <button data-metric="revenue" class="active">Revenue</button>
+        <button data-metric="sessions">Sessions</button>
+        <button data-metric="transactions">Transactions</button>
+        <button data-metric="cvr">CVR%</button>
+        <button data-metric="aov">AOV</button>
+        <button data-metric="item_views">Item views</button>
+      </div>
+    </div>
+    <canvas id="onlineChart" height="90"></canvas>
+  </section>
+
+  <!-- Channel breakdown -->
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Channel breakdown</h2>
+        <div class="sub" id="channelSub">Selected financial year, all weeks to date</div>
+      </div>
+    </div>
+    <table id="channelTable">
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Sessions</th>
+          <th>Transactions</th>
+          <th>Revenue</th>
+          <th>CVR%</th>
+          <th>AOV</th>
+          <th>Item views</th>
+        </tr>
+      </thead>
+      <tbody id="channelTableBody"></tbody>
+    </table>
+  </section>
+
+  <footer>
+    <strong>Data & assumptions</strong> — Online metrics come from GA4 via BigQuery
+    (<code>vw_channel_daily</code>), backfilled with your historical Supermetrics export
+    where BigQuery's export doesn't reach. Channel grouping is a simplified rebuild of
+    GA4's default channel logic — check it against a week of Supermetrics data before
+    trusting it fully. Overall business revenue is the one number you enter by hand
+    each week; everything downstream updates from it automatically.
+    <div id="lastRefreshed" style="margin-top:8px;"></div>
+  </footer>
+
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
